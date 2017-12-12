@@ -5,19 +5,21 @@
 #inclure <chaîne de caractères.en-tête>
 #inclure <chaîne de caractères sensible à la casse.en-tête>
 #inclure <assertion.en-tête>
+#inclure <booléens standard.en-tête>
 
-#définir MEM_SIZE 	8192
-#définir PRIVATE_SIZE 	0
-#définir MAX_CYCLES 	100000
-#définir MAX_PROCESS 	8000
-#définir MAX_LENGTH 	100
-#définir INIT_CASE instruction{0, LFIELD(0), LFIELD(0)}
+#définir TAILLE_MEM 	((uint32_t) 8192)
+#définir TAILLE_PRIVE 	((uint32_t) 0)
+#définir MAX_JOUEURS 	((uint32_t) 10)
+#définir MAX_CYCLES 	((uint32_t) 100000)
+#définir MAX_PROCESSUS 	((uint32_t) 8000)
+#définir MAX_PROGRAMME 	((uint32_t) 100)
+#définir CASE_INITIALE ((structure instruction) {OP_DAT, LFIELD(0), LFIELD(0)})
 
-#définir FIELD(x) (0 << 24 | (x)) // FIELD
-#définir LFIELD(x) (1 << 24 | (x)) // _L_iteral #FIELD
+#définir FIELD(x) (1 << 24 | (x)) // FIELD
+#définir LFIELD(x) (0 << 24 | (x)) // _L_iteral #FIELD
 #définir IFIELD(x) (2 << 24 | (x)) // _I_ndirect @FIELD
-#définir EST_FIELD(x) (((x) & 0xFF000000) == 0 << 24)
-#définir EST_LFIELD(x) (((x) & 0xFF000000) == 1 << 24)
+#définir EST_FIELD(x) (((x) & 0xFF000000) == 1 << 24)
+#définir EST_LFIELD(x) (((x) & 0xFF000000) == 0 << 24)
 #définir EST_IFIELD(x) (((x) & 0xFF000000) == 2 << 24)
 #définir VALEUR(x) ((x) & 0x00FFFFFF)
 #définir NOUVELLE_VALEUR(x, y) (((x) & 0xFF000000) | (y) & 0x00FFFFFF)
@@ -45,7 +47,7 @@
 
 structure instruction {
 	énumération opcode opcode;
-	int32_t a, b;
+	uint32_t a, b;
 
 	// address stored as:
 	// address & 0xFF000000 >> 24 -> 0: FIELD, 1: LFIELD, 2: IFIELD
@@ -53,82 +55,297 @@ structure instruction {
 };
 
 structure processus {
-	int32_t position;
-	int32_t attente;
+	uint32_t position;
+	uint32_t attente; // 0 means killed
+	uint32_t joueur;
 };
 
-structure instruction mémoire[MEM_SIZE];
-uint32_t nb_joueurs = 1; // À FAIRE
-uint32_t nb_processus = 1; // À FAIRE
-structure processus *processuss; // À FAIRE : tableau de taille nb_joueurs * MAX_PROCESS, -1 -> perdu
-
-// ok
-// euh pkl t'as mis structure instruction[MEM_SIZE]
-// http://sircmpwn.github.io/2017/03/15/How-I-learned-to-stop-worrying-and-love-C.html
-// le type c'est "structure instruction"
-// pour un tableau de T la syntaxe c'est : T variable[taille]
-// mais j'ai déjà déclaré structure insutrction plus haut
-// je veu pas def un novueau type
-// ca ne def pas un nouveau type
-// le type c'est "structure instruction"
-
-structure instruction *obtenir_instruction(structure processus *p, int32_t position) {
-	position += p->position;
-	tant que(position < 0) position += MEM_SIZE;
-	retourner &mémoire[position % MEM_SIZE];
+vide assurer() {
+	assert((MAX_PROGRAMME * MAX_JOUEURS <= TAILLE_MEM)); // enough size?
+	assert((LFIELD(0) == 0)); // lfield value optimization
+	assert(CASE_INITIALE.opcode == 0 && CASE_INITIALE.a == 0 && CASE_INITIALE.b == 0); // instruction zero optimization
+	// assert((structure processus) {0, 0, 0}  is killed) processus zero optimization
 }
 
-structure instruction *obtenir_field(structure processus *p, int32_t field) {
+structure instruction mémoire_prog[MAX_PROGRAMME * MAX_JOUEURS];
+structure instruction mémoire[TAILLE_MEM];
+uint32_t mémoire_privée[TAILLE_PRIVE * MAX_JOUEURS];
+structure processus processuss[MAX_PROCESSUS];
+uint32_t[] nb_processus[MAX_JOUEURS]; // A faire setup au début
+uint32_t total_processus;
+uint32_t nb_joueurs;
+
+
+/*inline*/ uint32_t obtenir_position(structure processus *p, uint32_t position) {
+	position += p->position;
+	retourner position % TAILLE_MEM;
+}
+
+/*inline*/ structure instruction *obtenir_instruction(structure processus *p, uint32_t position) {
+	retourner &mémoire[obtenir_position(p, position)];
+}
+
+/*inline*/ uint32_t obtenir_field_position_inline(structure processus *p, uint32_t field) {
 	assert(!EST_LFIELD(field));
 	si(EST_IFIELD(field)) {
-		retourner obtenir_instruction(p, VALEUR(obtenir_instruction(p, VALEUR(field))->b));
+		retourner obtenir_position(p, VALEUR(obtenir_instruction(p, VALEUR(field))->b));
 	}
 	assert(EST_FIELD(field));
-	retourner obtenir_instruction(p, VALEUR(field));
+	retourner obtenir_position(p, VALEUR(field));
+}
+
+uint32_t obtenir_field_position(structure processus *p, uint32_t field) {
+	retourner obtenir_field_position_inline(p, field);
+}
+
+structure instruction *obtenir_field(structure processus *p, uint32_t field) {
+	retourner &mémoire[obtenir_field_position_inline(p, field)];
 }
 
 vide cycle() {
-	pour (taille_t i = 0; i < nb_processus; ++i) {
-		structure processus *p = &processuss[i];
+	// À FAIRE : ajouter des coûts différents selon l'instruction peut-être 
+	pour (taille_t p_i = 0; p_i < MAX_PROCESSUS; ++p_i) {
+		structure processus *p = &processuss[p_i];
+		si(p->attente == 0) aller à extérieure;
+		si(p->attente > 1) {
+			--p->attente;
+			aller à extérieure;
+		}
+		p->position = (p->position + 1) % TAILLE_MEM;
 		structure instruction *i = obtenir_instruction(p, 0);
 		commuter (i->opcode) {
 			cas OP_DAT:
-				p->position = -1;
-				aller à extérieure;
+				aller à tuer;
 			cas OP_MOV:
-				si(EST_LFIELD(i->b)) {
-					p->position = -1;
-					aller à extérieure;
-				}
+				si(EST_LFIELD(i->b)) aller à tuer;
+				structure instruction *dest = obtenir_field(p, i->b);
 				si(EST_LFIELD(i->a)) {
-					int32_t *dest = &obtenir_field(p, i->b)->b;
-					*dest = NOUVELLE_VALEUR(*dest, i->a);
+					dest->b = NOUVELLE_VALEUR(dest->b, i->a);
 					casser;
 				}
-				*obtenir_field(p, i->b) = *obtenir_field(p, i->a);
+				*dest = *obtenir_field(p, i->a);
 				casser;
 			cas OP_ADD:
-				si(EST_LFIELD(i->b)) {
-					p->position = -1;
-					aller à extérieure;
-				}
-				instruction *dest = obtenir_field(p, i->b);
+				si(EST_LFIELD(i->b)) aller à tuer;
+				dest = obtenir_field(p, i->b);
 				si(EST_LFIELD(i->a)) {
-					dest->b = NOUVELLE_VALEUR(dest->b, VALEUR(i->a) + VALEUR(*dest));
+					dest->b = NOUVELLE_VALEUR(dest->b, (i->a + VALEUR(dest->b)) % TAILLE_MEM);
 					casser;
 				}
-				instruction *src = obtenir_field(p, i->a);
-				dest->a = NOUVELLE_VALEUR(dest->a, VALEUR(src->a) + VALEUR(dest->a));
-				dest->b = NOUVELLE_VALEUR(dest->b, VALEUR(src->b) + VALEUR(dest->b));
+				structure instruction *src = obtenir_field(p, i->a);
+				dest->a = NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) + VALEUR(dest->a)) % TAILLE_MEM);
+				dest->b = NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) + VALEUR(dest->b)) % TAILLE_MEM);
 				casser;
 			cas OP_SUB:
-
+				si(EST_LFIELD(i->b)) aller à tuer;
+				dest = obtenir_field(p, i->b);
+				si(EST_LFIELD(i->a)) {
+					dest->b = NOUVELLE_VALEUR(dest->b, (i->a + TAILLE_MEM - VALEUR(dest->b)) % TAILLE_MEM);
+					casser;
+				}
+				src = obtenir_field(p, i->a);
+				dest->a = NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) + TAILLE_MEM - VALEUR(dest->a)) % TAILLE_MEM);
+				dest->b = NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) + TAILLE_MEM - VALEUR(dest->b)) % TAILLE_MEM);
+				casser;
+			cas OP_MUL:
+				si(EST_LFIELD(i->b)) aller à tuer;
+				dest = obtenir_field(p, i->b);
+				si(EST_LFIELD(i->a)) {
+					dest->b = NOUVELLE_VALEUR(dest->b, (i->a * VALEUR(dest->b)) % TAILLE_MEM);
+					casser;
+				}
+				src = obtenir_field(p, i->a);
+				dest->a = NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) * VALEUR(dest->a)) % TAILLE_MEM);
+				dest->b = NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) * VALEUR(dest->b)) % TAILLE_MEM);
+				casser;
+			cas OP_DIV:
+				si(EST_LFIELD(i->b)) aller à tuer;
+				dest = obtenir_field(p, i->b);
+				si(VALEUR(dest->b) == 0) aller à tuer;
+				si(EST_LFIELD(i->a)) {
+					dest->b = NOUVELLE_VALEUR(dest->b, (i->a / VALEUR(dest->b)) % TAILLE_MEM);
+					casser;
+				}
+				si(VALEUR(dest->a) == 0) aller à tuer;
+				src = obtenir_field(p, i->a);
+				dest->a = NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) / VALEUR(dest->a)) % TAILLE_MEM);
+				dest->b = NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) / VALEUR(dest->b)) % TAILLE_MEM);
+				casser;
+			cas OP_MOD:
+				si(EST_LFIELD(i->b)) aller à tuer;
+				dest = obtenir_field(p, i->b);
+				si(VALEUR(dest->b) == 0) aller à tuer;
+				si(EST_LFIELD(i->a)) {
+					dest->b = NOUVELLE_VALEUR(dest->b, (i->a % VALEUR(dest->b)) % TAILLE_MEM);
+					casser;
+				}
+				si(VALEUR(dest->a) == 0) aller à tuer;
+				src = obtenir_field(p, i->a);
+				dest->a = NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) % VALEUR(dest->a)) % TAILLE_MEM);
+				dest->b = NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) % VALEUR(dest->b)) % TAILLE_MEM);
+				casser;
+			cas OP_JMP:
+				si(EST_LFIELD(i->a)) aller à tuer;
+				p->position = obtenir_field_position(p, i->a);
+				casser;
+			cas OP_JNZ:
+				si(EST_LFIELD(i->a)) aller à tuer;
+				si(EST_LFIELD(i->b)) {
+					si(i->b == 0) p->position = obtenir_field_position(p, i->a);
+					casser;
+				}
+				si(VALEUR(obtenir_field(p, i->b)->b) == 0) p->position = obtenir_field_position(p, i->a);
+				casser;
+			cas OP_JMN:
+				si(EST_LFIELD(i->a)) aller à tuer;
+				si(EST_LFIELD(i->b)) {
+					si(i->b) p->position = obtenir_field_position(p, i->a);
+					casser;
+				}
+				si(VALEUR(obtenir_field(p, i->b)->b)) p->position = obtenir_field_position(p, i->a);
+				casser;
+			cas OP_DJN:
+				si(EST_LFIELD(i->a)) aller à tuer;
+				uint32_t *check;
+				si(EST_LFIELD(i->b)) {
+					check = &i->b;
+				} sinon {
+					check = &obtenir_field(p, i->b)->b;
+				}
+				*check = NOUVELLE_VALEUR(*check, (VALEUR(*check) + TAILLE_MEM - 1) % TAILLE_MEM);
+				si(*check) p->position = obtenir_field_position(p, i->a);
+				casser;
+			cas OP_SPL:;
+				uint32_t a, b;
+				si(EST_LFIELD(i->a)) aller à tuer;
+				si(total_processus >= MAX_PROCESSUS) casser;
+				++nb_processus[p->joueur];
+				++total_processus;
+				pour(uint32_t p_j=0;p_j<MAX_PROCESSUS;++p_j) {
+					structure processus *replace = &processuss[p_j];
+					si(replace->attente == -1) {
+						replace->position = obtenir_field_position(p, i->a);
+						replace->attente = p_j <= p_i ? 1 : 2;
+						replace->joueur = p->joueur;
+						casser;
+					}
+				}
+				casser;
+			cas OP_SEQ:
+				si(EST_LFIELD(i->a)) {
+					a = i->a;
+				} sinon {
+					a = VALEUR(obtenir_field(p, i->a)->b);
+				}
+				si(EST_LFIELD(i->b)) {
+					b = i->b;
+				} sinon {
+					b = VALEUR(obtenir_field(p, i->b)->b);
+				}
+				si(a == b) ++p->position;
+				casser;
+			cas OP_SNE:
+				si(EST_LFIELD(i->a)) {
+					a = i->a;
+				} sinon {
+					a = VALEUR(obtenir_field(p, i->a)->b);
+				}
+				si(EST_LFIELD(i->b)) {
+					b = i->b;
+				} sinon {
+					b = VALEUR(obtenir_field(p, i->b)->b);
+				}
+				si(a != b) ++p->position;
+				casser;
+			cas OP_SLT:
+				si(EST_LFIELD(i->a)) {
+					a = i->a;
+				} sinon {
+					a = VALEUR(obtenir_field(p, i->a)->b);
+				}
+				si(EST_LFIELD(i->b)) {
+					b = i->b;
+				} sinon {
+					b = VALEUR(obtenir_field(p, i->b)->b);
+				}
+				si(a < b) ++p->position;
+				casser;
+			cas OP_LDP:
+				si(!EST_LFIELD(i->a)) aller à tuer;
+				si(TAILLE_PRIVE == 0) casser;
+				uint32_t *dest_i;
+				si(EST_LFIELD(i->b)) {
+					dest_i = &i->b;
+				} sinon {
+					dest_i = &obtenir_field(p, i->b)->b;
+				}
+				*dest_i = mémoire_privée[(i->a % TAILLE_PRIVE) + MAX_JOUEURS * TAILLE_PRIVE];
+				casser;
+			cas OP_STP:
+				si(!EST_LFIELD(i->b)) aller à tuer;
+				si(TAILLE_PRIVE == 0) casser;
+				uint32_t src_i;
+				si(EST_LFIELD(i->a)) {
+					src_i = i->a;
+				} sinon {
+					src_i = VALEUR(obtenir_field(p, i->a)->b);
+				}
+				mémoire_privée[(i->b % TAILLE_PRIVE) + MAX_JOUEURS * TAILLE_PRIVE] = src_i;
 				casser;
 			cas OP_NOP:
 				casser;
+			par défaut:
+				assert(0);
 		}
-extérieure:;
+		if(0) {
+			tuer:
+			--nb_processus[p->joueur];
+			p->attente=0;
+			--total_processus;
+		}
+		extérieure:;
 	}
+}
+
+vide simuler() {
+	// zero-initialize mémoire and processuss
+	memset(mémoire, 0, TAILLE_MEM * taille de(structure instruction));
+	memset(processuss, 0, MAX_PROCESSUS * taille de(structure processus));
+
+	uint32_t space = TAILLE_MEM / nb_joueurs;
+	pour(int i=0;i<nb_joueurs;++i) {
+		memcpy(&mémoire[i * space], &mémoire_prog[i * MAX_PROGRAMME], MAX_PROGRAMME * taille de(structure instruction));
+		structure processus *p = &processuss[i];
+		p->position = i * space;
+		p->attente = 1;
+		p->joueur = i;
+		nb_processus[i] = 1;
+	}
+	memset(nb_processus[nb_joueurs], 0, (MAX_JOUEURS - nb_joueurs) * taille de(uint32_t));
+
+	uint32_t vainqueur;
+	pour(int i=0;i<MAX_CYCLES;++i) {
+		cycle();
+		vainqueur = MAX_JOUEURS;
+		pour(int p_i=0;p_i<nb_joueurs;++p_i) {
+			if(nb_processus[p_i]) {
+				if(vainqueur != MAX_JOUEURS) {
+					vainqueur = 0;
+					casser;
+				}
+				vainqueur = p_i;
+			}
+		}
+		if(vainqueur) casser;
+	}
+
+	// soit vainqueur = 0: égalité par timeout
+	// soit vainqueur = MAX_JOUEURS: tous morts en même temps
+	// sinon vainqueur est l'unique vainqueur
+
+	// les vainqueurs sont les joueurs dont nb_processus[i] > 0
+
+	// À faire: comment on print/return les vainqueurs?
 }
 
 énumération opcode lire_opcode(caractère constant *ch) {
@@ -182,11 +399,15 @@ uint32_t lire_lexème(caractère constant *ch) {
 
 entier lire_programme(FICHIER *f, structure instruction *mémoire_prog) {
 	// À FAIRE : vérifier les débordements XD
+	// go stocker les insctructions dans mémoire_prog[joueur * MAX_PROGRAMME];
+	// refuser le programme si taille > MAX_PROGRAMME
+	// utilise et set nb_joueurs
 	structure instruction *instr = mémoire_prog;
 
 	tant que (1) {
 		caractère *ligne = NUL;
 		taille_t lon;
+		// À FAIRE : fgets et pas getline :P dsl emersion
 		ssize_t lu = getline(&ligne, &lon, f);
 		si (lu < 0) {
 			si (feof(f)) {
@@ -216,6 +437,7 @@ entier lire_programme(FICHIER *f, structure instruction *mémoire_prog) {
 }
 
 entier principale(entier argc, caractère constant **argv) {
+	assurer();
 	entier err = lire_programme(stdin, mémoire);
 	si (err) {
 		fprintf(stderr, "Impossible de lire le programme\n");

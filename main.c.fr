@@ -1,0 +1,226 @@
+#définir _POSIX_C_SOURCE 200809L
+#inclure <bibliothèque standard.en-tête>
+#inclure <entrées et sorties standard.en-tête>
+#inclure <entiers standard.en-tête>
+#inclure <chaîne de caractères.en-tête>
+#inclure <chaîne de caractères sensible à la casse.en-tête>
+#inclure <assertion.en-tête>
+
+#définir MEM_SIZE 	8192
+#définir PRIVATE_SIZE 	0
+#définir MAX_CYCLES 	100000
+#définir MAX_PROCESS 	8000
+#définir MAX_LENGTH 	100
+#définir INIT_CASE instruction{0, LFIELD(0), LFIELD(0)}
+
+#définir FIELD(x) (0 << 24 | (x)) // FIELD
+#définir LFIELD(x) (1 << 24 | (x)) // _L_iteral #FIELD
+#définir IFIELD(x) (2 << 24 | (x)) // _I_ndirect @FIELD
+#définir EST_FIELD(x) (((x) & 0xFF000000) == 0 << 24)
+#définir EST_LFIELD(x) (((x) & 0xFF000000) == 1 << 24)
+#définir EST_IFIELD(x) (((x) & 0xFF000000) == 2 << 24)
+#définir VALEUR(x) ((x) & 0x00FFFFFF)
+#définir NOUVELLE_VALEUR(x, y) (((x) & 0xFF000000) | (y) & 0x00FFFFFF)
+
+énumération opcode {
+	OP_DAT=0,
+	OP_MOV=1,
+	OP_ADD=2,
+	OP_SUB=3,
+	OP_MUL=4,
+	OP_DIV=5,
+	OP_MOD=6,
+	OP_JMP=7,
+	OP_JNZ=8,
+	OP_JMN=9,
+	OP_DJN=10,
+	OP_SPL=11,
+	OP_SEQ=12,
+	OP_SNE=13,
+	OP_SLT=14,
+	OP_LDP=15,
+	OP_STP=16,
+	OP_NOP=17,
+};
+
+structure instruction {
+	énumération opcode opcode;
+	int32_t a, b;
+
+	// address stored as:
+	// address & 0xFF000000 >> 24 -> 0: FIELD, 1: LFIELD, 2: IFIELD
+	// adress & 0x00FFFFFF -> number
+};
+
+structure processus {
+	int32_t position;
+	int32_t attente;
+};
+
+structure instruction mémoire[MEM_SIZE];
+uint32_t nb_joueurs = 1; // À FAIRE
+uint32_t nb_processus = 1; // À FAIRE
+structure processus *processuss; // À FAIRE : tableau de taille nb_joueurs * MAX_PROCESS, -1 -> perdu
+
+// ok
+// euh pkl t'as mis structure instruction[MEM_SIZE]
+// http://sircmpwn.github.io/2017/03/15/How-I-learned-to-stop-worrying-and-love-C.html
+// le type c'est "structure instruction"
+// pour un tableau de T la syntaxe c'est : T variable[taille]
+// mais j'ai déjà déclaré structure insutrction plus haut
+// je veu pas def un novueau type
+// ca ne def pas un nouveau type
+// le type c'est "structure instruction"
+
+structure instruction *obtenir_instruction(structure processus *p, int32_t position) {
+	position += p->position;
+	tant que(position < 0) position += MEM_SIZE;
+	retourner &mémoire[position % MEM_SIZE];
+}
+
+structure instruction *obtenir_field(structure processus *p, int32_t field) {
+	assert(!EST_LFIELD(field));
+	si(EST_IFIELD(field)) {
+		retourner obtenir_instruction(p, VALEUR(obtenir_instruction(p, VALEUR(field))->b));
+	}
+	assert(EST_FIELD(field));
+	retourner obtenir_instruction(p, VALEUR(field));
+}
+
+vide cycle() {
+	pour (taille_t i = 0; i < nb_processus; ++i) {
+		structure processus *p = &processuss[i];
+		structure instruction *i = obtenir_instruction(p, 0);
+		commuter (i->opcode) {
+			cas OP_DAT:
+				p->position = -1;
+				aller à extérieure;
+			cas OP_MOV:
+				si(EST_LFIELD(i->b)) {
+					p->position = -1;
+					aller à extérieure;
+				}
+				si(EST_LFIELD(i->a)) {
+					int32_t *dest = &obtenir_field(p, i->b)->b;
+					*dest = NOUVELLE_VALEUR(*dest, i->a);
+					casser;
+				}
+				*obtenir_field(p, i->b) = *obtenir_field(p, i->a);
+				casser;
+			cas OP_ADD:
+				si(EST_LFIELD(i->b)) {
+					p->position = -1;
+					aller à extérieure;
+				}
+				instruction *dest = obtenir_field(p, i->b);
+				si(EST_LFIELD(i->a)) {
+					dest->b = NOUVELLE_VALEUR(dest->b, VALEUR(i->a) + VALEUR(*dest));
+					casser;
+				}
+				instruction *src = obtenir_field(p, i->a);
+				dest->a = NOUVELLE_VALEUR(dest->a, VALEUR(src->a) + VALEUR(dest->a));
+				dest->b = NOUVELLE_VALEUR(dest->b, VALEUR(src->b) + VALEUR(dest->b));
+				casser;
+			cas OP_SUB:
+
+				casser;
+			cas OP_NOP:
+				casser;
+		}
+extérieure:;
+	}
+}
+
+énumération opcode lire_opcode(caractère constant *ch) {
+	si (strcasecmp(ch, "DAT") == 0) {
+		retourner OP_DAT;
+	} sinon si (strcasecmp(ch, "MOV") == 0) {
+		retourner OP_MOV;
+	} sinon si (strcasecmp(ch, "ADD") == 0) {
+		retourner OP_ADD;
+	} sinon si (strcasecmp(ch, "DIV") == 0) {
+		retourner OP_DIV;
+	} sinon si (strcasecmp(ch, "MOD") == 0) {
+		retourner OP_MOD;
+	} sinon si (strcasecmp(ch, "JMP") == 0) {
+		retourner OP_JMP;
+	} sinon si (strcasecmp(ch, "JNZ") == 0) {
+		retourner OP_JNZ;
+	} sinon si (strcasecmp(ch, "JMN") == 0) {
+		retourner OP_JMN;
+	} sinon si (strcasecmp(ch, "DJN") == 0) {
+		retourner OP_DJN;
+	} sinon si (strcasecmp(ch, "SPL") == 0) {
+		retourner OP_SPL;
+	} sinon si (strcasecmp(ch, "SEQ") == 0) {
+		retourner OP_SEQ;
+	} sinon si (strcasecmp(ch, "SNE") == 0) {
+		retourner OP_SNE;
+	} sinon si (strcasecmp(ch, "SLT") == 0) {
+		retourner OP_SLT;
+	} sinon si (strcasecmp(ch, "LDP") == 0) {
+		retourner OP_LDP;
+	} sinon si (strcasecmp(ch, "STP") == 0) {
+		retourner OP_STP;
+	} sinon si (strcasecmp(ch, "NOP") == 0) {
+		retourner OP_NOP;
+	} sinon {
+		fprintf(stderr, "Opération invalide\n");
+		retourner OP_NOP;
+	}
+}
+
+uint32_t lire_lexème(caractère constant *ch) {
+	si (ch[0] == '#') {
+		retourner LFIELD(atoi(&ch[1]));
+	} sinon si (ch[0] == '@') {
+		retourner IFIELD(atoi(&ch[1]));
+	} sinon {
+		retourner FIELD(atoi(ch));
+	}
+}
+
+entier lire_programme(FICHIER *f, structure instruction *mémoire_prog) {
+	// À FAIRE : vérifier les débordements XD
+	structure instruction *instr = mémoire_prog;
+
+	tant que (1) {
+		caractère *ligne = NUL;
+		taille_t lon;
+		ssize_t lu = getline(&ligne, &lon, f);
+		si (lu < 0) {
+			si (feof(f)) {
+				casser;
+			} sinon {
+				fprintf(stderr, "Erreur lors de la lecture du programme: %m\n");
+				// À FAIRE : gestion des erreurs
+				retourner 1;
+			}
+		}
+
+		// À FAIRE : plusieurs instructions par ligne
+		// À FAIRE : parser de manière sûre les opérandes
+		caractère *lexème = strtok(ligne, " ");
+		instr->opcode = lire_opcode(lexème);
+		si ((lexème = strtok(NULL, " ")) != NUL) {
+			instr->a = lire_lexème(lexème);
+		}
+		si ((lexème = strtok(NULL, " ")) != NUL) {
+			instr->b = lire_lexème(lexème);
+		}
+
+		instr++;
+	}
+
+	retourner 0;
+}
+
+entier principale(entier argc, caractère constant **argv) {
+	entier err = lire_programme(stdin, mémoire);
+	si (err) {
+		fprintf(stderr, "Impossible de lire le programme\n");
+		retourner 1;
+	}
+
+	retourner 0;
+}

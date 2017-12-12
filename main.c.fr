@@ -543,7 +543,7 @@ vide irc_envoyer(caractère *fmt, ...) {
   va_start(ap, fmt);
   vsnprintf(irc_buffer, 512, fmt, ap);
   va_end(ap);
-  BIO_write(bio, irc_buffer, strlen(irc_buffer));
+  BIO_puts(bio, irc_buffer);
 	BIO_flush(bio);
 }
 

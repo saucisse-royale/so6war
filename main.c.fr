@@ -7,13 +7,21 @@
 #inclure <assertion.en-tête>
 #inclure <booléens standard.en-tête>
 
+#inclure <openssl/ssl.h>
+#inclure <openssl/bio.h>
+#inclure <openssl/conf.h>
+#inclure <openssl/err.h>
+
 #définir TAILLE_MEM 	((uint32_t) 8192)
-#définir TAILLE_PRIVE 	((uint32_t) 0)
+#définir TAILLE_PRIVE 	((uint32_t) 10)
 #définir MAX_JOUEURS 	((uint32_t) 10)
 #définir MAX_CYCLES 	((uint32_t) 100000)
 #définir MAX_PROCESSUS 	((uint32_t) 8000)
 #définir MAX_PROGRAMME 	((uint32_t) 100)
 #définir CASE_INITIALE ((structure instruction) {OP_DAT, LFIELD(0), LFIELD(0)})
+#définir COMMANDE "!war"
+#définir MAX_NICK ((uint32_t) 16)
+#définir MAX_IRC ((uint32_t) 1024)
 
 #définir FIELD(x) (1 << 24 | (x)) // FIELD
 #définir LFIELD(x) (0 << 24 | (x)) // _L_iteral #FIELD
@@ -65,15 +73,19 @@ vide assurer() {
 	assert((LFIELD(0) == 0)); // lfield value optimization
 	assert(CASE_INITIALE.opcode == 0 && CASE_INITIALE.a == 0 && CASE_INITIALE.b == 0); // instruction zero optimization
 	// assert((structure processus) {0, 0, 0}  is killed) processus zero optimization
+	assert(200 + MAX_NICK * MAX_JOUEURS < MAX_IRC); // avoid success lines buffer overflows
 }
 
 structure instruction mémoire_prog[MAX_PROGRAMME * MAX_JOUEURS];
 structure instruction mémoire[TAILLE_MEM];
 uint32_t mémoire_privée[TAILLE_PRIVE * MAX_JOUEURS];
 structure processus processuss[MAX_PROCESSUS];
-uint32_t[] nb_processus[MAX_JOUEURS]; // A faire setup au début
+uint32_t nb_processus[MAX_JOUEURS];
 uint32_t total_processus;
 uint32_t nb_joueurs;
+caractère nom_joueurs[MAX_JOUEURS * (MAX_NICK + 1)];
+
+caractère tampon[MAX_IRC + 1];
 
 
 /*inline*/ uint32_t obtenir_position(structure processus *p, uint32_t position) {
@@ -90,6 +102,9 @@ uint32_t nb_joueurs;
 	si(EST_IFIELD(field)) {
 		retourner obtenir_position(p, VALEUR(obtenir_instruction(p, VALEUR(field))->b));
 	}
+	if(!EST_FIELD(field)) {
+		printf("%d %d %d\n",(field >> 24), field, field & 0x00FFFFFF);
+	}
 	assert(EST_FIELD(field));
 	retourner obtenir_position(p, VALEUR(field));
 }
@@ -103,7 +118,7 @@ structure instruction *obtenir_field(structure processus *p, uint32_t field) {
 }
 
 vide cycle() {
-	// À FAIRE : ajouter des coûts différents selon l'instruction peut-être 
+	// À FAIRE : ajouter des coûts différents selon l'instruction peut-être
 	pour (taille_t p_i = 0; p_i < MAX_PROCESSUS; ++p_i) {
 		structure processus *p = &processuss[p_i];
 		si(p->attente == 0) aller à extérieure;
@@ -111,7 +126,7 @@ vide cycle() {
 			--p->attente;
 			aller à extérieure;
 		}
-		p->position = (p->position + 1) % TAILLE_MEM;
+		bool position_incrementer = true;
 		structure instruction *i = obtenir_instruction(p, 0);
 		commuter (i->opcode) {
 			cas OP_DAT:
@@ -186,10 +201,12 @@ vide cycle() {
 				casser;
 			cas OP_JMP:
 				si(EST_LFIELD(i->a)) aller à tuer;
+				position_incrementer = false;
 				p->position = obtenir_field_position(p, i->a);
 				casser;
 			cas OP_JNZ:
 				si(EST_LFIELD(i->a)) aller à tuer;
+				position_incrementer = false;
 				si(EST_LFIELD(i->b)) {
 					si(i->b == 0) p->position = obtenir_field_position(p, i->a);
 					casser;
@@ -198,6 +215,7 @@ vide cycle() {
 				casser;
 			cas OP_JMN:
 				si(EST_LFIELD(i->a)) aller à tuer;
+				position_incrementer = false;
 				si(EST_LFIELD(i->b)) {
 					si(i->b) p->position = obtenir_field_position(p, i->a);
 					casser;
@@ -206,6 +224,7 @@ vide cycle() {
 				casser;
 			cas OP_DJN:
 				si(EST_LFIELD(i->a)) aller à tuer;
+				position_incrementer = false;
 				uint32_t *check;
 				si(EST_LFIELD(i->b)) {
 					check = &i->b;
@@ -223,7 +242,7 @@ vide cycle() {
 				++total_processus;
 				pour(uint32_t p_j=0;p_j<MAX_PROCESSUS;++p_j) {
 					structure processus *replace = &processuss[p_j];
-					si(replace->attente == -1) {
+					si(replace->attente == 0) {
 						replace->position = obtenir_field_position(p, i->a);
 						replace->attente = p_j <= p_i ? 1 : 2;
 						replace->joueur = p->joueur;
@@ -297,23 +316,25 @@ vide cycle() {
 			par défaut:
 				assert(0);
 		}
-		if(0) {
+		si(0) {
 			tuer:
 			--nb_processus[p->joueur];
 			p->attente=0;
 			--total_processus;
+		} sinon si(position_incrementer) {
+			p->position = (p->position + 1) % TAILLE_MEM;
 		}
 		extérieure:;
 	}
 }
 
-vide simuler() {
-	// zero-initialize mémoire and processuss
-	memset(mémoire, 0, TAILLE_MEM * taille de(structure instruction));
-	memset(processuss, 0, MAX_PROCESSUS * taille de(structure processus));
+caractère *simuler() {
+	if(nb_joueurs <= 1) {
+		retourner "Pas assez de participants pour lancer le CoreWar! Au moins 2 sont nécessaires.";
+	}
 
 	uint32_t space = TAILLE_MEM / nb_joueurs;
-	pour(int i=0;i<nb_joueurs;++i) {
+	pour(uint32_t i=0;i<nb_joueurs;++i) {
 		memcpy(&mémoire[i * space], &mémoire_prog[i * MAX_PROGRAMME], MAX_PROGRAMME * taille de(structure instruction));
 		structure processus *p = &processuss[i];
 		p->position = i * space;
@@ -321,31 +342,45 @@ vide simuler() {
 		p->joueur = i;
 		nb_processus[i] = 1;
 	}
-	memset(nb_processus[nb_joueurs], 0, (MAX_JOUEURS - nb_joueurs) * taille de(uint32_t));
 
 	uint32_t vainqueur;
-	pour(int i=0;i<MAX_CYCLES;++i) {
+	pour(uint32_t i=0;i<MAX_CYCLES;++i) {
 		cycle();
 		vainqueur = MAX_JOUEURS;
-		pour(int p_i=0;p_i<nb_joueurs;++p_i) {
-			if(nb_processus[p_i]) {
-				if(vainqueur != MAX_JOUEURS) {
+		pour(uint32_t p_i=0;p_i<nb_joueurs;++p_i) {
+			si(nb_processus[p_i]) {
+				si(vainqueur != MAX_JOUEURS) {
 					vainqueur = 0;
 					casser;
 				}
 				vainqueur = p_i;
 			}
 		}
-		if(vainqueur) casser;
+		si(vainqueur) casser;
 	}
 
-	// soit vainqueur = 0: égalité par timeout
-	// soit vainqueur = MAX_JOUEURS: tous morts en même temps
-	// sinon vainqueur est l'unique vainqueur
+	// cleanup/zero-initialize mémoire and processuss
+	memset(mémoire, 0, taille de(mémoire));
+	memset(processuss, 0, taille de(processuss));
 
-	// les vainqueurs sont les joueurs dont nb_processus[i] > 0
-
-	// À faire: comment on print/return les vainqueurs?
+	si(vainqueur == MAX_JOUEURS) {
+		retourner "Simulation terminée! Les derniers joueurs sont morts en même temps! Egalité.";
+	}
+	si(vainqueur > 0) {
+		strcpy(tampon, "Simulation terminée! Le vainqueur est: ");
+		strcat(tampon, &nom_joueurs[vainqueur]);
+		strcat(tampon, "! Félicitations.");
+		retourner tampon;
+	}
+	strcpy(tampon, "Simulation terminée par timeout! Les vainqueurs de l'égalité finale sont: ");
+	pour(uint32_t p_i=0;p_i<nb_joueurs;++p_i) {
+		si(nb_processus[p_i]) {
+			strcat(tampon, &nom_joueurs[p_i]);
+			strcat(tampon, ", ");
+		}
+	}
+	strcat(tampon, "félicitations !");
+	retourner tampon;
 }
 
 énumération opcode lire_opcode(caractère constant *ch) {
@@ -387,16 +422,22 @@ vide simuler() {
 	}
 }
 
-uint32_t lire_lexème(caractère constant *ch) {
-	si (ch[0] == '#') {
-		retourner LFIELD(atoi(&ch[1]));
-	} sinon si (ch[0] == '@') {
-		retourner IFIELD(atoi(&ch[1]));
-	} sinon {
-		retourner FIELD(atoi(ch));
-	}
+uint32_t parser_field(caractère constant *chaine) {
+	int64_t parsé = strtoll(chaine, NULL, 10);
+	tant que(parsé < 0) parsé += TAILLE_MEM;
+	retourner (uint32_t)(parsé % TAILLE_MEM);
 }
 
+uint32_t lire_lexème(caractère constant *ch) {
+	si (ch[0] == '#') {
+		retourner LFIELD(parser_field(&ch[1]));
+	} sinon si (ch[0] == '@') {
+		retourner IFIELD(parser_field(&ch[1]));
+	} sinon {
+		retourner FIELD(parser_field(ch));
+	}
+}
+/*
 entier lire_programme(FICHIER *f, structure instruction *mémoire_prog) {
 	// À FAIRE : vérifier les débordements XD
 	// go stocker les insctructions dans mémoire_prog[joueur * MAX_PROGRAMME];
@@ -435,14 +476,185 @@ entier lire_programme(FICHIER *f, structure instruction *mémoire_prog) {
 
 	retourner 0;
 }
+*/
+caractère *traiter(caractère *utilisateur, caractère *message) {
+	si(strncmp(COMMANDE, message, strlen(COMMANDE)) != 0) {
+		retourner NUL;
+	}
+	si(strlen(message) == strlen(COMMANDE)) {
+		retourner simuler();
+	}
+	caractère *lexème = strtok(message, " ");
+	si(strlen(lexème) != strlen(COMMANDE)) {
+		retourner NUL;
+	}
+	lexème = strtok(NULL, " "); // À FAIRE : remplacer par NUL quand fixed
+	si(lexème == NUL) {
+		retourner simuler();
+	}
+	uint32_t joueur = MAX_JOUEURS;
+	pour(uint32_t i=0;i<nb_joueurs;++i) {
+		si(strncmp(&nom_joueurs[i], utilisateur, MAX_NICK) == 0) {
+			joueur = i;
+			casser;
+		}
+	}
+	si(joueur == MAX_JOUEURS) {
+		si(nb_joueurs == MAX_JOUEURS) {
+			retourner "Désolé, le maximum de joueurs inscrits est déjà atteint!";
+		}
+		joueur = nb_joueurs++;
+		strncpy(&nom_joueurs[joueur], utilisateur, MAX_NICK);
+	}
+	memset(&mémoire_privée[TAILLE_PRIVE * joueur], 0, TAILLE_PRIVE * taille de(uint32_t));
+	structure instruction *i = &mémoire_prog[joueur * MAX_PROGRAMME];
+	memset(i, 0, taille de(MAX_PROGRAMME * taille de(structure instruction)));
+	structure instruction *max = i + MAX_PROGRAMME;
+	caractère *erreur = NUL;
+	faire {
+		si(i == max) {
+			casser;
+		}
+		i->opcode = lire_opcode(lexème);
+		si ((lexème = strtok(NULL, " ")) == NUL) {
+			erreur = "Erreur lors de la lecture du programme. Il manque un A-field. Dernière instruction tronquée.";
+			casser;
+		}
+		i->a = lire_lexème(lexème);
+		si ((lexème = strtok(NULL, ";")) == NUL) {
+			erreur = "Erreur lors de la lecture du programme. Il manque un B-field. Dernière instruction tronquée.";
+			casser;
+		}
+		i->b = lire_lexème(lexème);
+		++i;
+	} tant que((lexème = strtok(NULL, " ")) != NUL); // À FAIRE : remplacer par NUL quand fixed
+	si(erreur != NUL) {
+		*i = CASE_INITIALE;
+		retourner erreur;
+	}
+	retourner "Inscrit avec succès!";
+}
+
+BIO *bio;
+caractère irc_buffer[512];
+
+vide irc_envoyer(caractère *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(irc_buffer, 512, fmt, ap);
+  va_end(ap);
+  BIO_write(bio, irc_buffer, strlen(irc_buffer));
+	BIO_flush(bio);
+}
+
+vide irc_principal() {
+	caractère *nick = "so6war";
+	caractère *channel = "#labaze";
+	caractère *host = "saucisseroyale.cc";
+	caractère *port = "6697";
+
+	caractère *user, *command, *where, *message, *sep, *target;
+	entier i, j, l, sl, o = -1, start, wordcount;
+	caractère buf[513];
+	SSL_CTX *ctx;
+	SSL *ssl;
+
+	SSL_library_init();
+	SSL_load_error_strings();
+
+	ctx = SSL_CTX_new(SSLv23_client_method());
+	si(ctx == NUL) {
+		perror("SSL_CTX_new");
+		ERR_print_errors_fp(stderr);
+		retourner;
+	}
+
+	bio = BIO_new_ssl_connect(ctx);
+	BIO_get_ssl(bio, &ssl);
+	SSL_set_mode(ssl, SSL_MODE_AUTO_RETRY);
+
+	BIO_set_conn_hostname(bio, host);
+	BIO_set_conn_port(bio, port);
+
+	if (BIO_do_connect(bio) <= 0) {
+			BIO_free_all(bio);
+			perror("BIO_do_connect");
+			ERR_print_errors_fp(stderr);
+			retourner;
+	}
+
+	irc_envoyer("NICK %s\r\n", nick);
+	irc_envoyer("USER %s 0 0 :%s\r\n", nick, nick);
+
+	tant que ((sl = BIO_read(bio, irc_buffer, 512)) > 0) {
+			pour (i = 0; i < sl; i++) {
+					o++;
+					buf[o] = irc_buffer[i];
+					si ((i > 0 && irc_buffer[i] == '\n' && irc_buffer[i - 1] == '\r') || o == 512) {
+						si(i > 0 && irc_buffer[i] == '\n' && irc_buffer[i - 1] == '\r') {
+							buf[o - 1] = '\0';
+						} sinon {
+							buf[o + 1] = '\0';
+						}
+							l = o;
+							o = -1;
+
+							si (!strncmp(buf, "PING", 4)) {
+									buf[1] = 'O';
+									irc_envoyer(buf);
+							} sinon si (buf[0] == ':') {
+								wordcount = 0;
+								user = command = where = message = NUL;
+								pour (j = 1; j < l; j++) {
+									si (buf[j] == ' ') {
+										buf[j] = '\0';
+										wordcount++;
+										commuter(wordcount) {
+												cas 1: user = buf + 1; casser;
+												cas 2: command = buf + start; casser;
+												cas 3: where = buf + start; casser;
+										}
+										si (j == l - 1) continuer;
+										start = j + 1;
+									} sinon si (buf[j] == ':' && wordcount == 3) {
+										si (j < l - 1) message = buf + j + 1;
+										casser;
+									}
+								}
+									si (wordcount < 2) continuer;
+
+									si (!strncmp(command, "001", 3) && channel != NUL) {
+									irc_envoyer("JOIN %s\r\n", channel);
+								} sinon si (!strncmp(command, "PRIVMSG", 7) || !strncmp(command, "NOTICE", 6)) {
+									si (where == NUL || message == NUL) continuer;
+									si ((sep = strchr(user, '!')) != NUL) user[sep - user] = '\0';
+									si (where[0] == '#' || where[0] == '&' || where[0] == '+' || where[0] == '!') target = where; sinon target = user;
+									caractère* result = traiter(user, message);
+									si(result) {
+										irc_envoyer("%s %s :%s\r\n", command, target, result);
+									}
+								}
+						}
+
+					}
+			}
+	}
+
+	BIO_free_all(bio);
+}
 
 entier principale(entier argc, caractère constant **argv) {
 	assurer();
+
+	/*
 	entier err = lire_programme(stdin, mémoire);
 	si (err) {
 		fprintf(stderr, "Impossible de lire le programme\n");
 		retourner 1;
 	}
+	*/
+
+	irc_principal();
 
 	retourner 0;
 }

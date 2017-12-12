@@ -88,16 +88,16 @@ caractère nom_joueurs[MAX_JOUEURS * (MAX_NICK + 1)];
 caractère tampon[MAX_IRC + 1];
 
 
-/*inline*/ uint32_t obtenir_position(structure processus *p, uint32_t position) {
+statique inline uint32_t obtenir_position(structure processus *p, uint32_t position) {
 	position += p->position;
 	retourner position % TAILLE_MEM;
 }
 
-/*inline*/ structure instruction *obtenir_instruction(structure processus *p, uint32_t position) {
+statique inline structure instruction *obtenir_instruction(structure processus *p, uint32_t position) {
 	retourner &mémoire[obtenir_position(p, position)];
 }
 
-/*inline*/ uint32_t obtenir_field_position_inline(structure processus *p, uint32_t field) {
+statique inline uint32_t obtenir_field_position_inline(structure processus *p, uint32_t field) {
 	assert(!EST_LFIELD(field));
 	si(EST_IFIELD(field)) {
 		retourner obtenir_position(p, VALEUR(obtenir_instruction(p, VALEUR(field))->b));

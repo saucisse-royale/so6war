@@ -30,6 +30,7 @@
 #définir EST_LFIELD(x) (((x) & 0xFF000000) == 0 << 24)
 #définir EST_IFIELD(x) (((x) & 0xFF000000) == 2 << 24)
 #définir VALEUR(x) ((x) & 0x00FFFFFF)
+#définir TYPE_FIELD(x) ((x) & 0xFF000000)
 #définir NOUVELLE_VALEUR(x, y) (((x) & 0xFF000000) | (y) & 0x00FFFFFF)
 
 énumération opcode {
@@ -51,6 +52,7 @@
 	OP_LDP=15,
 	OP_STP=16,
 	OP_NOP=17,
+	OP_MAXOP=18,
 };
 
 structure instruction {
@@ -58,8 +60,8 @@ structure instruction {
 	uint32_t a, b;
 
 	// address stored as:
-	// address & 0xFF000000 >> 24 -> 0: FIELD, 1: LFIELD, 2: IFIELD
-	// adress & 0x00FFFFFF -> number
+	// address & 0xFF000000 >> 24 -> 1: FIELD, 0: LFIELD, 2: IFIELD
+	// address & 0x00FFFFFF -> number
 };
 
 structure processus {
@@ -74,19 +76,59 @@ vide assurer() {
 	assert(CASE_INITIALE.opcode == 0 && CASE_INITIALE.a == 0 && CASE_INITIALE.b == 0); // instruction zero optimization
 	// assert((structure processus) {0, 0, 0}  is killed) processus zero optimization
 	assert(200 + MAX_NICK * MAX_JOUEURS < MAX_IRC); // avoid success lines buffer overflows
+	assert(taille de(caractère) == 1); // pointer arithmetic optimization
+	assert(TAILLE_MEM && !(TAILLE_MEM & (TAILLE_MEM - 1))); // TAILLE_MEM power of 2: modulus and xor optimization
 }
 
-structure instruction mémoire_prog[MAX_PROGRAMME * MAX_JOUEURS];
-structure instruction mémoire[TAILLE_MEM];
-uint32_t mémoire_privée[TAILLE_PRIVE * MAX_JOUEURS];
+structure instruction mémoire_prog[MAX_JOUEURS][MAX_PROGRAMME];
+structure instruction mémoire_stockage[2][TAILLE_MEM];
+bool mémoire_changement[TAILLE_MEM];
+structure instruction *mémoire_lecture;
+structure instruction *mémoire_écriture;
+uint32_t mémoire_privée[MAX_JOUEURS][TAILLE_PRIVE];
 structure processus processuss[MAX_PROCESSUS];
 uint32_t nb_processus[MAX_JOUEURS];
 uint32_t total_processus;
 uint32_t nb_joueurs;
-caractère nom_joueurs[MAX_JOUEURS * (MAX_NICK + 1)];
+caractère nom_joueurs[MAX_JOUEURS][MAX_NICK + 1];
 
 caractère tampon[MAX_IRC + 1];
 
+vide inscrire_field(uint32_t *champ, uint32_t valeur) {
+	uint32_t index = ((caractère*)champ - (caractère*)mémoire_lecture) / taille de(structure instruction);
+	uint32_t *dest = (uint32_t*)mémoire_écriture + ((uint32_t*)champ - (uint32_t*)mémoire_lecture);
+	si(mémoire_changement[index]) {
+		si(TYPE_FIELD(*dest) == TYPE_FIELD(valeur)) {
+			*dest = NOUVELLE_VALEUR(*dest, *dest ^ valeur);
+		} sinon {
+			*dest = NOUVELLE_VALEUR((((*dest >> 24) & (valeur >> 24)) % 3) << 24, *dest ^ valeur);
+		}
+	} sinon {
+		*dest = valeur;
+		mémoire_changement[index] = true;
+	}
+}
+
+vide inscrire_instruction(structure instruction *i, structure instruction *valeur) {
+	uint32_t index = i - mémoire_lecture;
+	structure instruction *dest = mémoire_écriture + (i - mémoire_lecture);
+	si(mémoire_changement[index]) {
+		dest->opcode = (((uint32_t) dest->opcode) ^ ((uint32_t) valeur->opcode)) % OP_MAXOP;
+		si(TYPE_FIELD(dest->a) == TYPE_FIELD(valeur->a)) {
+			dest->a = NOUVELLE_VALEUR(dest->a, dest->a ^ valeur->a);
+		} sinon {
+			dest->a = NOUVELLE_VALEUR((((dest->a >> 24) & (valeur->a >> 24)) % 3) << 24, dest->a ^ valeur->a);
+		}
+		si(TYPE_FIELD(dest->b) == TYPE_FIELD(valeur->b)) {
+			dest->b = NOUVELLE_VALEUR(dest->b, dest->b ^ valeur->b);
+		} sinon {
+			dest->b = NOUVELLE_VALEUR((((dest->b >> 24) & (valeur->b >> 24)) % 3) << 24, dest->b ^ valeur->b);
+		}
+	} sinon {
+		*dest = *valeur;
+		mémoire_changement[index] = true;
+	}
+}
 
 statique inline uint32_t obtenir_position(structure processus *p, uint32_t position) {
 	position += p->position;
@@ -94,16 +136,13 @@ statique inline uint32_t obtenir_position(structure processus *p, uint32_t posit
 }
 
 statique inline structure instruction *obtenir_instruction(structure processus *p, uint32_t position) {
-	retourner &mémoire[obtenir_position(p, position)];
+	retourner &mémoire_lecture[obtenir_position(p, position)];
 }
 
 statique inline uint32_t obtenir_field_position_inline(structure processus *p, uint32_t field) {
 	assert(!EST_LFIELD(field));
 	si(EST_IFIELD(field)) {
 		retourner obtenir_position(p, VALEUR(obtenir_instruction(p, VALEUR(field))->b));
-	}
-	if(!EST_FIELD(field)) {
-		printf("%d %d %d\n",(field >> 24), field, field & 0x00FFFFFF);
 	}
 	assert(EST_FIELD(field));
 	retourner obtenir_position(p, VALEUR(field));
@@ -114,11 +153,16 @@ uint32_t obtenir_field_position(structure processus *p, uint32_t field) {
 }
 
 structure instruction *obtenir_field(structure processus *p, uint32_t field) {
-	retourner &mémoire[obtenir_field_position_inline(p, field)];
+	retourner &mémoire_lecture[obtenir_field_position_inline(p, field)];
 }
 
 vide cycle() {
 	// À FAIRE : ajouter des coûts différents selon l'instruction peut-être
+	memcpy(mémoire_écriture, mémoire_lecture, taille de(mémoire_stockage[0]));
+	memset(mémoire_changement, 0, taille de(mémoire_changement));
+	structure instruction *échange = mémoire_lecture;
+	mémoire_lecture = mémoire_écriture;
+	mémoire_écriture = échange;
 	pour (taille_t p_i = 0; p_i < MAX_PROCESSUS; ++p_i) {
 		structure processus *p = &processuss[p_i];
 		si(p->attente == 0) aller à extérieure;
@@ -128,6 +172,7 @@ vide cycle() {
 		}
 		bool position_incrementer = true;
 		structure instruction *i = obtenir_instruction(p, 0);
+		// printf("%d %d %d %d\n", p_i, p->joueur, p->position, i->opcode);
 		commuter (i->opcode) {
 			cas OP_DAT:
 				aller à tuer;
@@ -135,69 +180,69 @@ vide cycle() {
 				si(EST_LFIELD(i->b)) aller à tuer;
 				structure instruction *dest = obtenir_field(p, i->b);
 				si(EST_LFIELD(i->a)) {
-					dest->b = NOUVELLE_VALEUR(dest->b, i->a);
+					inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, i->a));
 					casser;
 				}
-				*dest = *obtenir_field(p, i->a);
+				inscrire_instruction(dest, obtenir_field(p, i->a));
 				casser;
 			cas OP_ADD:
 				si(EST_LFIELD(i->b)) aller à tuer;
 				dest = obtenir_field(p, i->b);
 				si(EST_LFIELD(i->a)) {
-					dest->b = NOUVELLE_VALEUR(dest->b, (i->a + VALEUR(dest->b)) % TAILLE_MEM);
+					inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, (i->a + VALEUR(dest->b)) % TAILLE_MEM));
 					casser;
 				}
 				structure instruction *src = obtenir_field(p, i->a);
-				dest->a = NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) + VALEUR(dest->a)) % TAILLE_MEM);
-				dest->b = NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) + VALEUR(dest->b)) % TAILLE_MEM);
+				inscrire_field(&dest->a, NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) + VALEUR(dest->a)) % TAILLE_MEM));
+				inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) + VALEUR(dest->b)) % TAILLE_MEM));
 				casser;
 			cas OP_SUB:
 				si(EST_LFIELD(i->b)) aller à tuer;
 				dest = obtenir_field(p, i->b);
 				si(EST_LFIELD(i->a)) {
-					dest->b = NOUVELLE_VALEUR(dest->b, (i->a + TAILLE_MEM - VALEUR(dest->b)) % TAILLE_MEM);
+					inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, (i->a + TAILLE_MEM - VALEUR(dest->b)) % TAILLE_MEM));
 					casser;
 				}
 				src = obtenir_field(p, i->a);
-				dest->a = NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) + TAILLE_MEM - VALEUR(dest->a)) % TAILLE_MEM);
-				dest->b = NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) + TAILLE_MEM - VALEUR(dest->b)) % TAILLE_MEM);
+				inscrire_field(&dest->a, NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) + TAILLE_MEM - VALEUR(dest->a)) % TAILLE_MEM));
+				inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) + TAILLE_MEM - VALEUR(dest->b)) % TAILLE_MEM));
 				casser;
 			cas OP_MUL:
 				si(EST_LFIELD(i->b)) aller à tuer;
 				dest = obtenir_field(p, i->b);
 				si(EST_LFIELD(i->a)) {
-					dest->b = NOUVELLE_VALEUR(dest->b, (i->a * VALEUR(dest->b)) % TAILLE_MEM);
+					inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, (i->a * VALEUR(dest->b)) % TAILLE_MEM));
 					casser;
 				}
 				src = obtenir_field(p, i->a);
-				dest->a = NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) * VALEUR(dest->a)) % TAILLE_MEM);
-				dest->b = NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) * VALEUR(dest->b)) % TAILLE_MEM);
+				inscrire_field(&dest->a, NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) * VALEUR(dest->a)) % TAILLE_MEM));
+				inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) * VALEUR(dest->b)) % TAILLE_MEM));
 				casser;
 			cas OP_DIV:
 				si(EST_LFIELD(i->b)) aller à tuer;
 				dest = obtenir_field(p, i->b);
 				si(VALEUR(dest->b) == 0) aller à tuer;
 				si(EST_LFIELD(i->a)) {
-					dest->b = NOUVELLE_VALEUR(dest->b, (i->a / VALEUR(dest->b)) % TAILLE_MEM);
+					inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, (i->a / VALEUR(dest->b)) % TAILLE_MEM));
 					casser;
 				}
 				si(VALEUR(dest->a) == 0) aller à tuer;
 				src = obtenir_field(p, i->a);
-				dest->a = NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) / VALEUR(dest->a)) % TAILLE_MEM);
-				dest->b = NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) / VALEUR(dest->b)) % TAILLE_MEM);
+				inscrire_field(&dest->a, NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) / VALEUR(dest->a)) % TAILLE_MEM));
+				inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) / VALEUR(dest->b)) % TAILLE_MEM));
 				casser;
 			cas OP_MOD:
 				si(EST_LFIELD(i->b)) aller à tuer;
 				dest = obtenir_field(p, i->b);
 				si(VALEUR(dest->b) == 0) aller à tuer;
 				si(EST_LFIELD(i->a)) {
-					dest->b = NOUVELLE_VALEUR(dest->b, (i->a % VALEUR(dest->b)) % TAILLE_MEM);
+					inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, (i->a % VALEUR(dest->b)) % TAILLE_MEM));
 					casser;
 				}
 				si(VALEUR(dest->a) == 0) aller à tuer;
 				src = obtenir_field(p, i->a);
-				dest->a = NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) % VALEUR(dest->a)) % TAILLE_MEM);
-				dest->b = NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) % VALEUR(dest->b)) % TAILLE_MEM);
+				inscrire_field(&dest->a, NOUVELLE_VALEUR(dest->a, (VALEUR(src->a) % VALEUR(dest->a)) % TAILLE_MEM));
+				inscrire_field(&dest->b, NOUVELLE_VALEUR(dest->b, (VALEUR(src->b) % VALEUR(dest->b)) % TAILLE_MEM));
 				casser;
 			cas OP_JMP:
 				si(EST_LFIELD(i->a)) aller à tuer;
@@ -231,8 +276,9 @@ vide cycle() {
 				} sinon {
 					check = &obtenir_field(p, i->b)->b;
 				}
-				*check = NOUVELLE_VALEUR(*check, (VALEUR(*check) + TAILLE_MEM - 1) % TAILLE_MEM);
-				si(*check) p->position = obtenir_field_position(p, i->a);
+				uint32_t nouvelle_valeur = NOUVELLE_VALEUR(*check, (VALEUR(*check) + TAILLE_MEM - 1) % TAILLE_MEM);
+				inscrire_field(check, nouvelle_valeur);
+				si(nouvelle_valeur) p->position = obtenir_field_position(p, i->a);
 				casser;
 			cas OP_SPL:;
 				uint32_t a, b;
@@ -298,7 +344,7 @@ vide cycle() {
 				} sinon {
 					dest_i = &obtenir_field(p, i->b)->b;
 				}
-				*dest_i = mémoire_privée[(i->a % TAILLE_PRIVE) + MAX_JOUEURS * TAILLE_PRIVE];
+				inscrire_field(dest_i, mémoire_privée[p->joueur][i->a % TAILLE_PRIVE]);
 				casser;
 			cas OP_STP:
 				si(!EST_LFIELD(i->b)) aller à tuer;
@@ -309,7 +355,7 @@ vide cycle() {
 				} sinon {
 					src_i = VALEUR(obtenir_field(p, i->a)->b);
 				}
-				mémoire_privée[(i->b % TAILLE_PRIVE) + MAX_JOUEURS * TAILLE_PRIVE] = src_i;
+				mémoire_privée[p->joueur][i->b % TAILLE_PRIVE] = src_i;
 				casser;
 			cas OP_NOP:
 				casser;
@@ -333,9 +379,12 @@ caractère *simuler() {
 		retourner "Pas assez de participants pour lancer le CoreWar! Au moins 2 sont nécessaires.";
 	}
 
+	mémoire_lecture = mémoire_stockage[0];
+	mémoire_écriture = mémoire_stockage[1];
+
 	uint32_t space = TAILLE_MEM / nb_joueurs;
 	pour(uint32_t i=0;i<nb_joueurs;++i) {
-		memcpy(&mémoire[i * space], &mémoire_prog[i * MAX_PROGRAMME], MAX_PROGRAMME * taille de(structure instruction));
+		memcpy(&mémoire_lecture[i * space], mémoire_prog[i], taille de(mémoire_prog[i]));
 		structure processus *p = &processuss[i];
 		p->position = i * space;
 		p->attente = 1;
@@ -350,32 +399,32 @@ caractère *simuler() {
 		pour(uint32_t p_i=0;p_i<nb_joueurs;++p_i) {
 			si(nb_processus[p_i]) {
 				si(vainqueur != MAX_JOUEURS) {
-					vainqueur = 0;
+					vainqueur = MAX_JOUEURS + 1;
 					casser;
 				}
 				vainqueur = p_i;
 			}
 		}
-		si(vainqueur) casser;
+		si(vainqueur < MAX_JOUEURS) casser;
 	}
 
 	// cleanup/zero-initialize mémoire and processuss
-	memset(mémoire, 0, taille de(mémoire));
+	memset(mémoire_stockage[0], 0, taille de(mémoire_stockage[0]));
 	memset(processuss, 0, taille de(processuss));
 
 	si(vainqueur == MAX_JOUEURS) {
 		retourner "Simulation terminée! Les derniers joueurs sont morts en même temps! Egalité.";
 	}
-	si(vainqueur > 0) {
-		strcpy(tampon, "Simulation terminée! Le vainqueur est: ");
-		strcat(tampon, &nom_joueurs[vainqueur]);
+	si(vainqueur < MAX_JOUEURS) {
+		strcpy(tampon, "Simulation terminée! Le vainqueur est ");
+		strcat(tampon, nom_joueurs[vainqueur]);
 		strcat(tampon, "! Félicitations.");
 		retourner tampon;
 	}
 	strcpy(tampon, "Simulation terminée par timeout! Les vainqueurs de l'égalité finale sont: ");
 	pour(uint32_t p_i=0;p_i<nb_joueurs;++p_i) {
 		si(nb_processus[p_i]) {
-			strcat(tampon, &nom_joueurs[p_i]);
+			strcat(tampon, nom_joueurs[p_i]);
 			strcat(tampon, ", ");
 		}
 	}
@@ -494,7 +543,7 @@ caractère *traiter(caractère *utilisateur, caractère *message) {
 	}
 	uint32_t joueur = MAX_JOUEURS;
 	pour(uint32_t i=0;i<nb_joueurs;++i) {
-		si(strncmp(&nom_joueurs[i], utilisateur, MAX_NICK) == 0) {
+		si(strncmp(nom_joueurs[i], utilisateur, MAX_NICK) == 0) {
 			joueur = i;
 			casser;
 		}
@@ -504,11 +553,11 @@ caractère *traiter(caractère *utilisateur, caractère *message) {
 			retourner "Désolé, le maximum de joueurs inscrits est déjà atteint!";
 		}
 		joueur = nb_joueurs++;
-		strncpy(&nom_joueurs[joueur], utilisateur, MAX_NICK);
+		strncpy(nom_joueurs[joueur], utilisateur, MAX_NICK);
 	}
-	memset(&mémoire_privée[TAILLE_PRIVE * joueur], 0, TAILLE_PRIVE * taille de(uint32_t));
-	structure instruction *i = &mémoire_prog[joueur * MAX_PROGRAMME];
-	memset(i, 0, taille de(MAX_PROGRAMME * taille de(structure instruction)));
+	memset(mémoire_privée[joueur], 0, taille de(mémoire_privée[joueur]));
+	memset(mémoire_prog[joueur], 0, taille de(mémoire_prog[joueur]));
+	structure instruction *i = mémoire_prog[joueur];
 	structure instruction *max = i + MAX_PROGRAMME;
 	caractère *erreur = NUL;
 	faire {
@@ -554,7 +603,7 @@ vide irc_principal() {
 	caractère *port = "6697";
 
 	caractère *user, *command, *where, *message, *sep, *target;
-	entier i, j, l, sl, o = -1, start, wordcount;
+	entier i, j, l, sl, o = -1, start, wordcount, newline;
 	caractère buf[513];
 	SSL_CTX *ctx;
 	SSL *ssl;
@@ -592,10 +641,11 @@ vide irc_principal() {
 					buf[o] = irc_buffer[i];
 					si ((i > 0 && irc_buffer[i] == '\n' && irc_buffer[i - 1] == '\r') || o == 512) {
 						si(i > 0 && irc_buffer[i] == '\n' && irc_buffer[i - 1] == '\r') {
-							buf[o - 1] = '\0';
+							newline = o + 1;
 						} sinon {
-							buf[o + 1] = '\0';
+							newline = -1;
 						}
+						buf[o + 1] = '\0';
 							l = o;
 							o = -1;
 
@@ -629,6 +679,7 @@ vide irc_principal() {
 									si (where == NUL || message == NUL) continuer;
 									si ((sep = strchr(user, '!')) != NUL) user[sep - user] = '\0';
 									si (where[0] == '#' || where[0] == '&' || where[0] == '+' || where[0] == '!') target = where; sinon target = user;
+									si (newline != -1) buf[newline - 2] = '\0';
 									caractère* result = traiter(user, message);
 									si(result) {
 										irc_envoyer("%s %s :%s\r\n", command, target, result);
